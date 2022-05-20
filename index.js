@@ -1,6 +1,7 @@
 const express = require('express');
 require('dotenv').config();
 const jwt = require('jsonwebtoken');
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
 const cors = require('cors');
 const app = express();
@@ -10,7 +11,7 @@ app.use(cors());
 app.use(express.json());
 
 
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const e = require('express');
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.sptt8.mongodb.net/myFirstDatabase?retryWrites=true&w=majority`;
 const client = new MongoClient(uri, { useNewUrlParser: true, useUnifiedTopology: true, serverApi: ServerApiVersion.v1 });
@@ -39,6 +40,7 @@ async function run() {
     const bookingCollections = client.db("doctorPortal").collection("booking");
     const userCollections = client.db("doctorPortal").collection("users");
     const doctorsCollections = client.db("doctorPortal").collection("doctor");
+    const paymentCollections = client.db("doctorPortal").collection("payments");
     const verifyAdmin = async (req, res, next) => {
        const requester = req.decoded.email;
       const requesterAccount = await userCollections.findOne({email: requester});
@@ -48,6 +50,19 @@ async function run() {
         res.status(403).send({message: 'forbidden access'})
       }
     }
+    //Payment process
+    app.post('/create-payment-intent',verifyJWT, async(req, res) => {
+      const {price} = req.body;
+      const amount = price * 100;
+      const paymentIntent = await stripe.paymentIntents.create({
+          amount: amount,
+          currency: "usd",
+          payment_method_types: ['card']
+         
+        });
+        res.send({clientSecret: paymentIntent.client_secret})
+      })
+
   //user PUT
   app.put('/user/:email', async(req, res) => {
     const email = req.params.email;
@@ -58,7 +73,7 @@ async function run() {
       $set: user,
     };
     const result = await userCollections.updateOne(filter, updateDoc, options);
-    const token = jwt.sign(filter, process.env.ACCESS_TOKEN_SECRET, {expiresIn: '1h'});
+    const token = jwt.sign(filter, process.env.ACCESS_TOKEN_SECRET, {expiresIn: '1d'});
     res.send({result, token});
   });
   app.get('/admin/:email', async(req, res) => {
@@ -95,6 +110,13 @@ async function run() {
         return res.status(403).send('Forbiddent Access')
       }
     })
+    //Get
+    app.get('/booking/:id',verifyJWT, async(req, res) => {
+      const id = req.params.id;
+      const query = {_id: ObjectId(id)};
+      const booking = await bookingCollections.findOne(query);
+      res.send(booking)
+    })
     //post
     app.post('/booking', async(req, res) => {
       const booking = req.body;
@@ -106,6 +128,22 @@ async function run() {
       const result = await bookingCollections.insertOne(booking);
       res.send({success: true, result});
     });
+
+    //Patch
+    app.patch('/booking/:id',verifyJWT, async(req, res) => {
+      const id = req.params.id;
+      const payment = req.body;
+      const filter = {_id: ObjectId(id)};
+      const updatedDoc = {
+        $set: {
+          paid: true,
+          transactionId: payment.transactionId,
+        }
+      }
+      const result  = await paymentCollections.insertOne(payment);
+      const updatedBooking = await bookingCollections.updateOne(filter, updatedDoc);
+      res.send(updatedDoc)
+    })
     //all service get
     app.get('/services', async(req, res) => {
       const cursor = serviceCollections.find({}).project({name: 1});
